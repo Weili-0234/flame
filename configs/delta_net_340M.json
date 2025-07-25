@@ -22,5 +22,6 @@
     "use_cache": true,
     "use_gate": false,
     "use_output_norm": true,
-    "use_short_conv": true
+    "use_short_conv": true,
+    "torch_dtype": "bfloat16"
 }
