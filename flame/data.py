@@ -3,15 +3,17 @@
 from __future__ import annotations
 
 import copy
+import os
 import pickle
 from copy import deepcopy
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Union
 
 import datasets
 import numpy as np
 import torch
-from datasets import Dataset, IterableDataset, interleave_datasets, load_dataset
+from datasets import Dataset, IterableDataset, interleave_datasets, load_dataset, load_from_disk
 from datasets.iterable_dataset import ShufflingConfig
 from torch.distributed.checkpoint.stateful import Stateful
 from torchdata.stateful_dataloader import StatefulDataLoader
@@ -19,6 +21,36 @@ from transformers import PreTrainedTokenizer
 
 from torchtitan.tools import utils
 from torchtitan.tools.logging import logger
+
+
+def _is_save_to_disk_dataset(path: str) -> bool:
+    """
+    Check if a path points to a dataset saved using save_to_disk.
+    
+    Args:
+        path: Path to check
+        
+    Returns:
+        True if the path contains a save_to_disk dataset, False otherwise
+    """
+    try:
+        path_obj = Path(path)
+        # Check if path exists and is a directory
+        if not path_obj.exists() or not path_obj.is_dir():
+            return False
+        
+        # Check for the presence of dataset_info.json and state.json files
+        # These are created by save_to_disk
+        has_dataset_info = (path_obj / "dataset_info.json").exists()
+        has_state = (path_obj / "state.json").exists()
+        
+        # Also check for arrow files which are typical for save_to_disk datasets
+        has_arrow_files = any(path_obj.glob("data-*.arrow"))
+        
+        return has_dataset_info and has_state and has_arrow_files
+    except Exception:
+        # If any error occurs during checking, assume it's not a save_to_disk dataset
+        return False
 
 
 class BufferShuffledIterableDataset(IterableDataset):
@@ -557,16 +589,24 @@ def build_dataset(
     color = utils.Color
     min_num_shards = dp_degree * num_workers if dp_degree else None
     if len(dataset.split(',')) == 1:
-        dataset = load_dataset(
-            path=dataset,
-            name=dataset_name,
-            split=dataset_split,
-            data_dir=data_dir,
-            data_files=data_files,
-            trust_remote_code=True,
-            streaming=streaming,
-            num_proc=num_workers if not streaming else None,
-        )
+        # Check if this is a save_to_disk dataset
+        if _is_save_to_disk_dataset(dataset):
+            logger.info(f"Detected save_to_disk dataset at {dataset}, using load_from_disk")
+            dataset = load_from_disk(dataset)
+            # For save_to_disk datasets, we need to select the split manually
+            if dataset_split != 'train':
+                dataset = dataset[dataset_split]
+        else:
+            dataset = load_dataset(
+                path=dataset,
+                name=dataset_name,
+                split=dataset_split,
+                data_dir=data_dir,
+                data_files=data_files,
+                trust_remote_code=True,
+                streaming=streaming,
+                num_proc=num_workers if not streaming else None,
+            )
         logger.info(f"Shuffling the dataset with seed {seed}")
         if not streaming:
             # the states of map-style dataset is recoverable after shuffling
@@ -584,16 +624,21 @@ def build_dataset(
                     f"Disabling the streaming mode and resharding dataset to {min_num_shards} shards."
                     f"{color.reset}"
                 )
-                dataset = load_dataset(
-                    path=dataset,
-                    name=dataset_name,
-                    split=dataset_split,
-                    data_dir=data_dir,
-                    data_files=data_files,
-                    trust_remote_code=True,
-                    streaming=False,
-                    num_proc=num_workers,
-                )
+                if _is_save_to_disk_dataset(dataset):
+                    dataset = load_from_disk(dataset)
+                    if dataset_split != 'train':
+                        dataset = dataset[dataset_split]
+                else:
+                    dataset = load_dataset(
+                        path=dataset,
+                        name=dataset_name,
+                        split=dataset_split,
+                        data_dir=data_dir,
+                        data_files=data_files,
+                        trust_remote_code=True,
+                        streaming=False,
+                        num_proc=num_workers,
+                    )
                 if seed is not None:
                     dataset = dataset.shuffle(seed=seed)
                 dataset = dataset.to_iterable_dataset(num_shards=min_num_shards)
@@ -646,20 +691,28 @@ def build_dataset(
 
         subsets = []
         for i, prob in enumerate(data_probs):
-            subset = load_dataset(
-                path=datasets[i],
-                name=dataset_names[i],
-                split=dataset_splits[i],
-                data_dir=data_dirs[i],
-                data_files=data_files[i],
-                trust_remote_code=True,
-                streaming=streaming,
-                num_proc=(
-                    num_workers
-                    if not streaming
-                    else None
-                ),
-            )
+            # Check if this is a save_to_disk dataset
+            if _is_save_to_disk_dataset(datasets[i]):
+                logger.info(f"Detected save_to_disk dataset at {datasets[i]}, using load_from_disk")
+                subset = load_from_disk(datasets[i])
+                # For save_to_disk datasets, we need to select the split manually
+                if dataset_splits[i] != 'train':
+                    subset = subset[dataset_splits[i]]
+            else:
+                subset = load_dataset(
+                    path=datasets[i],
+                    name=dataset_names[i],
+                    split=dataset_splits[i],
+                    data_dir=data_dirs[i],
+                    data_files=data_files[i],
+                    trust_remote_code=True,
+                    streaming=streaming,
+                    num_proc=(
+                        num_workers
+                        if not streaming
+                        else None
+                    ),
+                )
             logger.info(
                 f"Subset {color.cyan}{datasets[i]}"
                 + (f":{dataset_names[i]} " if dataset_names[i] else " ")
@@ -686,16 +739,21 @@ def build_dataset(
                     )
                     # again, it's ok to directly shuffle the map-style dataset
                     # we expect an error raised if the map-style dataset still has not enough data shards
-                    subset = load_dataset(
-                        path=datasets[i],
-                        name=dataset_names[i],
-                        split=dataset_splits[i],
-                        data_dir=data_dirs[i],
-                        data_files=data_files[i],
-                        trust_remote_code=True,
-                        streaming=False,
-                        num_proc=num_workers,
-                    )
+                    if _is_save_to_disk_dataset(datasets[i]):
+                        subset = load_from_disk(datasets[i])
+                        if dataset_splits[i] != 'train':
+                            subset = subset[dataset_splits[i]]
+                    else:
+                        subset = load_dataset(
+                            path=datasets[i],
+                            name=dataset_names[i],
+                            split=dataset_splits[i],
+                            data_dir=data_dirs[i],
+                            data_files=data_files[i],
+                            trust_remote_code=True,
+                            streaming=False,
+                            num_proc=num_workers,
+                        )
                     if seed is not None:
                         subset = subset.shuffle(seed=seed)
                     subset = subset.to_iterable_dataset(num_shards=min_num_shards)

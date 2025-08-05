@@ -3,6 +3,7 @@ test.py
 
 # data files
 data
+preprocessed_dataset/
 
 # bash scripts
 *.sh
