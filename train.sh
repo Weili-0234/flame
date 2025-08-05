@@ -66,15 +66,15 @@ steps=$(grep -oP '(?<=--training.steps )[^ ]+' <<< "$params")
 config=$(grep -oP '(?<=--model.config )[^ ]+' <<< "$params")
 tokenizer=$(grep -oP '(?<=--model.tokenizer_path )[^ ]+' <<< "$params")
 model=$(
-  python -c "import fla, sys; from transformers import AutoConfig; print(AutoConfig.from_pretrained(sys.argv[1]).to_json_string())" "$config" | jq -r '.model_type'
+  python -c "import fla, sys, custom_models; from transformers import AutoConfig; print(AutoConfig.from_pretrained(sys.argv[1]).to_json_string())" "$config" | jq -r '.model_type'
 )
 
 mkdir -p $path
 cp * $path
 cp -r configs $path
 cp -r flame   $path
-cp -r 3rdparty/flash-linear-attention/fla $path
-cp -r 3rdparty/torchtitan/torchtitan $path
+cp -r ../flash-linear-attention/fla $path
+# cp -r 3rdparty/torchtitan/torchtitan $path
 
 # for offline systems
 # export TRANSFORMERS_OFFLINE=1
