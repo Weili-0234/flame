@@ -2,8 +2,15 @@ import json
 import argparse
 import torch
 from transformers import AutoConfig, AutoModelForCausalLM
+import sys
+import os
+
+# Add the parent directory of 'scripts' to the Python path
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 # Import custom models to make them available to AutoModelForCausalLM
+import fla
+import flame
 import custom_models
 
 def main():
