@@ -3,8 +3,8 @@ import os
 from datasets import load_dataset
 
 # Set your Hugging Face cache path
-os.environ["HF_HOME"] = "/home/ubuntu/ext-mamba-illinois/wenhao-project/enxin/llava-next/hf_cache"
-os.environ["HF_DATASETS_CACHE"] = os.path.join(os.environ["HF_HOME"], "datasets")
+# os.environ["HF_HOME"] = "/home/ubuntu/ext-mamba-illinois/wenhao-project/enxin/llava-next/hf_cache"
+#os.environ["HF_DATASETS_CACHE"] = os.path.join(os.environ["HF_HOME"], "datasets")
 
 from huggingface_hub import login
 login(token=os.environ["HF_TOKEN"])
@@ -18,7 +18,7 @@ login(token=os.environ["HF_TOKEN"])
 # # dataset = load_dataset("HuggingFaceFW/fineweb-edu", name="sample-100BT", num_proc=64, cache_dir="/your/cache/path")
 
 # Subsets you want to download in order
-subsets = ["sample-10BT", "sample-100BT", "sample-350BT"]
+subsets = ["sample-10BT", "sample-100BT", "sample-350BT", "default"]
 
 # Use streaming=False to trigger full download
 def download_subset(subset_name):
