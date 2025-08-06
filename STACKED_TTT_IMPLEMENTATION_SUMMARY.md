@@ -2,7 +2,7 @@
 
 ## Overview
 
-This document summarizes the successful implementation of the stacked TTT (Test-Time Training) architecture for the LaCT (Learning-augmented Causal Transformer) model. The implementation follows Test-Driven Development (TDD) principles and maintains full backward compatibility.
+This document summarizes the successful (remark: partially buggy but still pass all previous tests) implementation of the stacked TTT (Test-Time Training) architecture for the LaCT (Learning-augmented Causal Transformer) model. The implementation follows Test-Driven Development (TDD) principles and maintains full backward compatibility.
 
 ## Key Features Implemented
 

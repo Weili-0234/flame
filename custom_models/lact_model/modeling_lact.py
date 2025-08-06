@@ -40,6 +40,7 @@ class LaCTBlock(nn.Module):
 
         self.attn_norm = (RMSNorm if config.fuse_norm else nn.RMSNorm)(config.hidden_size, eps=config.norm_eps)
         self.attn = LaCTSWIGLULayer(
+            config=config,  # Pass the full config
             hidden_size=config.hidden_size,
             num_attn_heads=config.num_attn_heads,
             num_lact_heads=config.num_lact_heads,

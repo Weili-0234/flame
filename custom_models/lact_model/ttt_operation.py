@@ -65,6 +65,46 @@ def zeropower_via_newtonschulz5(G):
     return X
 
 
+@torch.compile()
+def zeropower_via_newtonschulz5_2d(G):
+    """
+    Newton-Schulz iteration to compute the zeroth power / orthogonalization of G.
+    This version handles individual parameter gradients (2D or 3D tensors) for end-to-end TTT.
+    Args:
+        G: [d, d'] or [b, d, d'] - Individual parameter gradient
+    Returns:
+        X: [d, d'] or [b, d, d'] - Orthogonalized gradient
+    FLOPS: When d=d', Total FLOPS=30 * d^3
+    """
+    if len(G.shape) == 2:
+        # Handle 2D tensor (single gradient)
+        X = G.bfloat16()
+        if G.size(0) > G.size(1):
+            X = X.transpose(0, 1)
+        # Ensure spectral norm is at most 1
+        X = X / (X.norm() + 1e-7)
+        # Perform the NS iterations
+        for a, b, c in [
+            (4.0848, -6.8946, 2.9270),
+            (3.9505, -6.3029, 2.6377),
+            (3.7418, -5.5913, 2.3037),
+            (2.8769, -3.1427, 1.2046),
+            (2.8366, -3.0525, 1.2012),
+        ]:
+            A = X @ X.transpose(0, 1)
+            B = b * A + c * A @ A
+            X = a * X + B @ X
+
+        if G.size(0) > G.size(1):
+            X = X.transpose(0, 1)
+        return X
+    elif len(G.shape) == 3:
+        # Handle 3D tensor (batched gradients) - use the original function
+        return zeropower_via_newtonschulz5(G)
+    else:
+        raise ValueError(f"Expected 2D or 3D tensor, got shape {G.shape}")
+
+
 
 @torch.compile()
 def block_causal_lact_swiglu(

@@ -63,6 +63,7 @@ class LaCTSWIGLUConfig(PretrainedConfig):
         fw_init_gain: float = 0.5,
         r: int = 1,  # Number of stacked SwiGLU MLPs in TTT block
         residual_ttt: bool = False,  # Whether to use residual connections between stacked MLPs
+        greedy_ttt: bool = False,  # Whether to use greedy TTT update (legacy) vs end-to-end TTT update
         **kwargs,
     ):
         self.hidden_size = hidden_size
@@ -109,6 +110,17 @@ class LaCTSWIGLUConfig(PretrainedConfig):
             raise ValueError(f"r must be >= 1, got {r}")
         self.r = r
         self.residual_ttt = residual_ttt
+        self.greedy_ttt = greedy_ttt
+        
+        # Validate configuration compatibility
+        if self.greedy_ttt and self.residual_ttt:
+            import warnings
+            warnings.warn(
+                "greedy_ttt=True is incompatible with residual_ttt=True. "
+                "Automatically setting residual_ttt=False for backward compatibility.",
+                UserWarning
+            )
+            self.residual_ttt = False
         
         super().__init__(
             pad_token_id=pad_token_id,
