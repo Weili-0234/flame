@@ -61,6 +61,8 @@ class LaCTSWIGLUConfig(PretrainedConfig):
         fuse_cross_entropy: bool = True,
         vocab_size: int = 32000,
         fw_init_gain: float = 0.5,
+        r: int = 1,  # Number of stacked SwiGLU MLPs in TTT block
+        residual_ttt: bool = False,  # Whether to use residual connections between stacked MLPs
         **kwargs,
     ):
         self.hidden_size = hidden_size
@@ -101,6 +103,13 @@ class LaCTSWIGLUConfig(PretrainedConfig):
         self.ttt_loss_type = ttt_loss_type
         self.w0_w2_low_rank = w0_w2_low_rank
         self.fw_init_gain = fw_init_gain
+        
+        # Validate r parameter
+        if r < 1:
+            raise ValueError(f"r must be >= 1, got {r}")
+        self.r = r
+        self.residual_ttt = residual_ttt
+        
         super().__init__(
             pad_token_id=pad_token_id,
             bos_token_id=bos_token_id,

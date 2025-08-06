@@ -92,6 +92,45 @@ class LowRankFastWeight(nn.Module):
         return W
 
 
+class SwiGLUFastWeightBlock(nn.Module):
+    """
+    A single SwiGLU fast weight block for the stacked TTT architecture.
+    This encapsulates the w0, w1, w2 parameters for a single MLP in the stack.
+    """
+    def __init__(
+        self,
+        num_heads: int,
+        d_h: int,
+        d_in: int,
+        d_out: int,
+        w0_w2_low_rank: int = -1,
+        fw_init_gain: float = 0.5,
+    ):
+        super().__init__()
+        self.num_heads = num_heads
+        self.d_h = d_h
+        self.d_in = d_in
+        self.d_out = d_out
+        self.w0_w2_low_rank = w0_w2_low_rank
+        self.fw_init_gain = fw_init_gain
+        
+        # Initialize fast weights
+        if self.w0_w2_low_rank > 0:
+            self.w0 = LowRankFastWeight(num_heads, d_h, d_in, self.w0_w2_low_rank, init_gain=self.fw_init_gain, add_identity=True)
+            self.w2 = LowRankFastWeight(num_heads, d_h, d_in, self.w0_w2_low_rank, init_gain=self.fw_init_gain, add_identity=True)
+        else:
+            self.w0 = nn.Parameter(
+                torch.randn(num_heads, d_h, d_in) / math.sqrt(d_in)
+            )
+            self.w2 = nn.Parameter(
+                torch.randn(num_heads, d_h, d_in) / math.sqrt(d_in)
+            )
+        
+        self.w1 = nn.Parameter(
+            torch.randn(num_heads, d_out, d_h) / math.sqrt(d_h)
+        )
+
+
 class LaCTSWIGLULayer(nn.Module):
 
     def __init__(
@@ -118,6 +157,8 @@ class LaCTSWIGLULayer(nn.Module):
         use_momentum: bool = False,
         ttt_loss_type: str = "dot_product",
         fw_init_gain: float = 0.5, # init the fast weights
+        r: int = 1,  # Number of stacked SwiGLU MLPs
+        residual_ttt: bool = False,  # Whether to use residual connections between stacked MLPs
     ):
         super().__init__()
 
@@ -159,26 +200,41 @@ class LaCTSWIGLULayer(nn.Module):
         self.d_out = d_out
         self.w0_w2_low_rank = w0_w2_low_rank
         self.fw_init_gain = fw_init_gain
+        self.r = r
+        self.residual_ttt = residual_ttt
 
-        # Low Rank parameterization of the fast weights.  
-        # This is a compromise to keep the number of parameters low when comparing against baselines. 
-        # Idealy, low-rank parameterization always hurts the performance. 
-        if self.w0_w2_low_rank > 0:
-            self.w0 = LowRankFastWeight(self.num_fw_heads, d_h, d_in, self.w0_w2_low_rank, init_gain=self.fw_init_gain, add_identity=True)
-            self.w2 = LowRankFastWeight(self.num_fw_heads, d_h, d_in, self.w0_w2_low_rank, init_gain=self.fw_init_gain, add_identity=True)
+        # Initialize stacked TTT architecture
+        if r == 1:
+            # Original single MLP behavior for backward compatibility
+            if self.w0_w2_low_rank > 0:
+                self.w0 = LowRankFastWeight(self.num_fw_heads, d_h, d_in, self.w0_w2_low_rank, init_gain=self.fw_init_gain, add_identity=True)
+                self.w2 = LowRankFastWeight(self.num_fw_heads, d_h, d_in, self.w0_w2_low_rank, init_gain=self.fw_init_gain, add_identity=True)
+            else:
+                self.w0 = nn.Parameter(
+                    torch.randn(self.num_fw_heads, int(d_h), d_in)
+                    / math.sqrt(d_in)
+                )  # [num_fw_heads, d_h, d_in]
+                self.w2 = nn.Parameter(
+                    torch.randn(self.num_fw_heads, int(d_h), d_in)
+                    / math.sqrt(d_in)
+                )  # [num_fw_heads, d_h, d_in]
+            self.w1 = nn.Parameter(
+                torch.randn(self.num_fw_heads, int(d_out), d_h)
+                / math.sqrt(d_h)
+            )  # [num_fw_heads, d_out, d_h]
         else:
-            self.w0 = nn.Parameter(
-                torch.randn(self.num_fw_heads, int(d_h), d_in)
-                / math.sqrt(d_in)
-            )  # [num_fw_heads, d_h, d_in]
-            self.w2 = nn.Parameter(
-                torch.randn(self.num_fw_heads, int(d_h), d_in)
-                / math.sqrt(d_in)
-            )  # [num_fw_heads, d_h, d_in]
-        self.w1 = nn.Parameter(
-            torch.randn(self.num_fw_heads, int(d_out), d_h)
-            / math.sqrt(d_h)
-        )  # [num_fw_heads, d_out, d_h]
+            # Stacked MLP architecture
+            self.stacked_mlps = nn.ModuleList([
+                SwiGLUFastWeightBlock(
+                    num_heads=self.num_fw_heads,
+                    d_h=d_h,
+                    d_in=d_in,
+                    d_out=d_out,
+                    w0_w2_low_rank=self.w0_w2_low_rank,
+                    fw_init_gain=self.fw_init_gain,
+                )
+                for _ in range(r)
+            ])
         
         #### Per-Token LR parameterization. 
         self.lr_dim = int(lr_dim * 3 * self.num_fw_heads)
@@ -360,15 +416,7 @@ class LaCTSWIGLULayer(nn.Module):
             fast_k = rearrange(fast_k, 'b s (n_h d) -> (b n_h) s d', n_h=self.num_fw_heads)
             #### RoPE done. ####
 
-        if self.w0_w2_low_rank > 0:
-            fw_w0 = self.w0().repeat(batch_size, 1, 1)
-            fw_w2 = self.w2().repeat(batch_size, 1, 1)
-        else:
-            fw_w0 = self.w0.repeat(batch_size, 1, 1) # [nh, d_h, d_in] -> [b*nh, d_h, d_in]
-            fw_w2 = self.w2.repeat(batch_size, 1, 1) # [nh, d_h, d_in] -> [b*nh, d_h, d_in]
-        
-        fw_w1 = self.w1.repeat(batch_size, 1, 1) # [nh, d_out, d_h] -> [b*nh, d_out, d_h]
-
+        # Prepare learning rates and momentum
         lr = self.lr_proj(hidden_states) # [b, s, num_heads * lr_dim_per_head]
         if self.lr_parameterization == "mamba":
             lr = torch.nn.functional.softplus(lr.float() + self.base_lr_inv)
@@ -383,23 +431,71 @@ class LaCTSWIGLULayer(nn.Module):
         else:
             momentum = None
         
-        # [b * nh, s, d_ttt_head]
-        if self.ttt_prenorm:
-            # pre-norm version of ttt.   state = state + f(norm(state))
-            fw_x = prenorm_block_causal_lact_swiglu(
-                fw_w0, fw_w1, fw_w2, fast_q, fast_k, fast_v,
-                fw_lr1, fw_lr2, fw_lr3,
-                chunk_size=self.lact_chunk_size,
-                use_muon=self.use_muon,
-                momentum=momentum)
+        # Stacked TTT computation
+        if self.r == 1:
+            # Original single MLP behavior
+            if self.w0_w2_low_rank > 0:
+                fw_w0 = self.w0().repeat(batch_size, 1, 1)
+                fw_w2 = self.w2().repeat(batch_size, 1, 1)
+            else:
+                fw_w0 = self.w0.repeat(batch_size, 1, 1) # [nh, d_h, d_in] -> [b*nh, d_h, d_in]
+                fw_w2 = self.w2.repeat(batch_size, 1, 1) # [nh, d_h, d_in] -> [b*nh, d_h, d_in]
+            
+            fw_w1 = self.w1.repeat(batch_size, 1, 1) # [nh, d_out, d_h] -> [b*nh, d_out, d_h]
+            
+            # [b * nh, s, d_ttt_head]
+            if self.ttt_prenorm:
+                # pre-norm version of ttt.   state = state + f(norm(state))
+                fw_x = prenorm_block_causal_lact_swiglu(
+                    fw_w0, fw_w1, fw_w2, fast_q, fast_k, fast_v,
+                    fw_lr1, fw_lr2, fw_lr3,
+                    chunk_size=self.lact_chunk_size,
+                    use_muon=self.use_muon,
+                    momentum=momentum)
+            else:
+                # post-norm version of ttt.   state = norm(state + f(state))
+                fw_x = block_causal_lact_swiglu(
+                    fw_w0, fw_w1, fw_w2, fast_q, fast_k, fast_v,
+                    fw_lr1, fw_lr2, fw_lr3,
+                    chunk_size=self.lact_chunk_size,
+                    use_muon=self.use_muon,
+                    momentum=momentum)
         else:
-            # post-norm version of ttt.   state = norm(state + f(state))
-            fw_x = block_causal_lact_swiglu(
-                fw_w0, fw_w1, fw_w2, fast_q, fast_k, fast_v,
-                fw_lr1, fw_lr2, fw_lr3,
-                chunk_size=self.lact_chunk_size,
-                use_muon=self.use_muon,
-                momentum=momentum)
+            # Stacked MLP architecture
+            fw_x = fast_q  # Start with the input
+            
+            for i, mlp in enumerate(self.stacked_mlps):
+                # Prepare weights for this MLP
+                if self.w0_w2_low_rank > 0:
+                    fw_w0 = mlp.w0().repeat(batch_size, 1, 1)
+                    fw_w2 = mlp.w2().repeat(batch_size, 1, 1)
+                else:
+                    fw_w0 = mlp.w0.repeat(batch_size, 1, 1)
+                    fw_w2 = mlp.w2.repeat(batch_size, 1, 1)
+                
+                fw_w1 = mlp.w1.repeat(batch_size, 1, 1)
+                
+                # Apply TTT for this MLP
+                if self.ttt_prenorm:
+                    mlp_output = prenorm_block_causal_lact_swiglu(
+                        fw_w0, fw_w1, fw_w2, fw_x, fast_k, fast_v,
+                        fw_lr1, fw_lr2, fw_lr3,
+                        chunk_size=self.lact_chunk_size,
+                        use_muon=self.use_muon,
+                        momentum=momentum)
+                else:
+                    mlp_output = block_causal_lact_swiglu(
+                        fw_w0, fw_w1, fw_w2, fw_x, fast_k, fast_v,
+                        fw_lr1, fw_lr2, fw_lr3,
+                        chunk_size=self.lact_chunk_size,
+                        use_muon=self.use_muon,
+                        momentum=momentum)
+                
+                # Apply residual connection if enabled and not the last MLP
+                if self.residual_ttt and i < len(self.stacked_mlps) - 1:
+                    fw_x = fw_x + mlp_output
+                else:
+                    fw_x = mlp_output
         
         # per-head output norm for ttt layer.
         ttt_x_normed = self.ttt_norm(fw_x)

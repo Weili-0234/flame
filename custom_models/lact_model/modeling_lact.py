@@ -61,7 +61,9 @@ class LaCTBlock(nn.Module):
             w0_w2_low_rank=config.w0_w2_low_rank,
             use_momentum=config.use_momentum,
             ttt_loss_type=config.ttt_loss_type,
-            fw_init_gain=config.fw_init_gain
+            fw_init_gain=config.fw_init_gain,
+            r=config.r,
+            residual_ttt=config.residual_ttt
         )
 
         self.mlp_norm = (RMSNorm if config.fuse_norm else nn.RMSNorm)(config.hidden_size, eps=config.norm_eps)
@@ -168,16 +170,27 @@ class LaCTPreTrainedModel(PreTrainedModel):
             nn.init.zeros_(module.qk_offset)
 
             logger.info(f"in PreTrainedModel initialize fast weights for LaCTSWIGLULayer")
-            # init w0, w1, w2
-            if module.w0_w2_low_rank > 0:
-                module.w0._init_weights()
-                module.w2._init_weights()
+            
+            # Handle both single MLP (r=1) and stacked MLP (r>1) cases
+            if module.r == 1:
+                # Original single MLP behavior
+                if module.w0_w2_low_rank > 0:
+                    module.w0._init_weights()
+                    module.w2._init_weights()
+                else:
+                    nn.init.normal_(module.w0, mean=0.0, std=1.0 / math.sqrt(module.fw_head_dim))
+                    nn.init.normal_(module.w2, mean=0.0, std=1.0 / math.sqrt(module.fw_head_dim))
+                nn.init.normal_(module.w1, mean=0.0, std=1.0/math.sqrt(module.d_h))
             else:
-                nn.init.normal_(module.w0, mean=0.0, std=1.0 / math.sqrt(module.fw_head_dim))
-                nn.init.normal_(module.w2, mean=0.0, std=1.0 / math.sqrt(module.fw_head_dim))
-
-        
-            nn.init.normal_(module.w1, mean=0.0, std=1.0/math.sqrt(module.d_h))
+                # Stacked MLP behavior - initialize each MLP in the stack
+                for mlp in module.stacked_mlps:
+                    if module.w0_w2_low_rank > 0:
+                        mlp.w0._init_weights()
+                        mlp.w2._init_weights()
+                    else:
+                        nn.init.normal_(mlp.w0, mean=0.0, std=1.0 / math.sqrt(module.fw_head_dim))
+                        nn.init.normal_(mlp.w2, mean=0.0, std=1.0 / math.sqrt(module.fw_head_dim))
+                    nn.init.normal_(mlp.w1, mean=0.0, std=1.0/math.sqrt(module.d_h))
 
 
 
