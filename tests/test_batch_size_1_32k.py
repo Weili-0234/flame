@@ -5,11 +5,15 @@ This tests memory efficiency of our manual backprop implementation with very lon
 """
 
 import os
+import sys
 import json
 import torch
 import torch.nn as nn
 import traceback
 from pathlib import Path
+
+# Add flame to Python path
+sys.path.insert(0, os.path.join(os.getcwd(), 'flame'))
 
 # Set environment
 os.environ['CUDA_VISIBLE_DEVICES'] = '0'
@@ -20,7 +24,7 @@ def load_config_from_json(config_path):
         config_dict = json.load(f)
     
     # Import the config class
-    from custom_models.lact_model.configuration_lact_swiglu import LaCTSWIGLUConfig
+    from custom_models.lact_model.configuration_lact import LaCTSWIGLUConfig
     
     # Create config object
     config = LaCTSWIGLUConfig(**config_dict)
@@ -37,7 +41,7 @@ def test_batch_size_1_32k():
     torch.cuda.empty_cache()
     
     # Load configuration
-    config_path = "configs/816M_lact_swiglu_nh4_fwlow_rank_momentum_muon_r2_e2e.json"
+    config_path = "flame/configs/816M_lact_swiglu_nh4_fwlow_rank_momentum_muon_r2_e2e.json"
     print(f"Loading config from {config_path}")
     
     try:
