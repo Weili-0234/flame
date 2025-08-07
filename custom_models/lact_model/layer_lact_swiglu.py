@@ -554,9 +554,41 @@ class LaCTSWIGLULayer(nn.Module):
                         fw_x = mlp_output
         else:
             # New end-to-end TTT approach
-            fw_x = self._end_to_end_ttt_update(
-                fast_q, fast_k, fast_v, fw_lr1, fw_lr2, fw_lr3, momentum
+            # Use manual backprop for stacked MLPs (r>1) without residual connections to save memory
+            use_manual_backprop = (
+                self.training and 
+                self.r > 1 and 
+                not self.residual_ttt  # Now supports both full-rank and low-rank
             )
+            
+            if use_manual_backprop:
+                # Use memory-efficient manual backprop
+                from .ttt_fast_path import apply_stacked_ttt_function
+                
+                # Collect initial weights
+                initial_w0s = [mlp.w0 for mlp in self.stacked_mlps]
+                initial_w1s = [mlp.w1 for mlp in self.stacked_mlps]
+                initial_w2s = [mlp.w2 for mlp in self.stacked_mlps]
+                
+                # Create config dict
+                config = {
+                    'chunk_size': self.lact_chunk_size,
+                    'r': self.r,
+                    'use_muon': self.use_muon,
+                    'w0_w2_low_rank': self.w0_w2_low_rank,
+                }
+                
+                fw_x = apply_stacked_ttt_function(
+                    initial_w0s, initial_w1s, initial_w2s,
+                    fast_q, fast_k, fast_v,
+                    fw_lr3, fw_lr1, fw_lr2,  # Note: lr order is lr0, lr1, lr2 in function
+                    momentum, config
+                )
+            else:
+                # Use standard autograd approach
+                fw_x = self._end_to_end_ttt_update(
+                    fast_q, fast_k, fast_v, fw_lr1, fw_lr2, fw_lr3, momentum
+                )
         
         # per-head output norm for ttt layer.
         ttt_x_normed = self.ttt_norm(fw_x)
